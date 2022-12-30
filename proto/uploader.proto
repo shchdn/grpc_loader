@@ -1,0 +1,33 @@
+syntax = "proto3";
+
+option go_package = ".;api";
+
+package api;
+
+service Uploader {
+    rpc initUpload(UploadInitRequest) returns (UploadInitResponse) {}
+    rpc upload(stream UploadRequest) returns (UploadResponse) {}
+}
+
+message UploadRequest {
+    bytes Chunk = 1;
+    int32 ChunkId = 2;
+    string ClientId = 3;
+    string Filename = 4;
+}
+
+message UploadResponse {
+    int32 Status = 1;
+}
+
+message UploadInitRequest {
+    string Filename = 1;
+    string ModifiedAt = 2;
+    int32 Size = 3;
+    int32 ChunksCount = 4;
+    string ClientId = 5;
+}
+
+message UploadInitResponse {
+    int32 ChunkStartFrom = 1;
+}
