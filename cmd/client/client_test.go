@@ -1,14 +1,15 @@
-package main
+package client
 
 import (
 	"bufio"
 	"context"
-	"github.com/stretchr/testify/assert"
-	"google.golang.org/grpc/metadata"
 	"grpc_loader/pkg/api"
 	"io"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"google.golang.org/grpc/metadata"
 )
 
 const myId = "tester"

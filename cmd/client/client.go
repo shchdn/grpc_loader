@@ -1,4 +1,4 @@
-package main
+package client
 
 import (
 	"bufio"
@@ -17,6 +17,25 @@ import (
 )
 
 const SendTimeoutSec = 5
+
+func RunClient() {
+	var filepath string
+	myId := generateClientId()
+	client, err := createClient()
+	if err != nil {
+		log.Fatal(err)
+	}
+	for {
+		fmt.Println("Pass me a filepath:")
+		fmt.Scanln(&filepath)
+		for {
+			err := uploadFileToServer(client, myId, filepath)
+			if err == nil {
+				break
+			}
+		}
+	}
+}
 
 func generateClientId() api.ClientId {
 	return uuid.New().String()

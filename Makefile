@@ -2,10 +2,10 @@ gen:
 	protoc --go_out=./pkg/api --go-grpc_out=./pkg/api proto/uploader.proto
 
 run-server:
-	go run cmd/server/main.go
+	go run . server
 
 run-client:
-	go run cmd/client/*.go
+	go run . client
 
 run-tests:
 	go test ./...

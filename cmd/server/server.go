@@ -1,4 +1,4 @@
-package main
+package server
 
 import (
 	"grpc_loader/pkg/api"
@@ -11,7 +11,7 @@ import (
 
 const maxMsgSize = 1024 * 1024 * 2 // 2 MB
 
-func main() {
+func RunServer() {
 	s := grpc.NewServer(grpc.MaxRecvMsgSize(maxMsgSize))
 	srv := uploader.NewUploadServer()
 	api.RegisterUploaderServer(s, srv)
