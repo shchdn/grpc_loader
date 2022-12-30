@@ -10,6 +10,7 @@ import (
 func main() {
 	if len(os.Args) < 2 {
 		fmt.Println("Specify service")
+		return
 	}
 	switch os.Args[1] {
 	case "server":

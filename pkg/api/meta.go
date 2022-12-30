@@ -1,8 +1,28 @@
 package api
 
+import sync "sync"
+
+// As mvp, meta is stored in-memory.
+// It is better to store it externally, any sql-like database would be fine.
+// External storage could help us to survive server restart without losing all stat.
+
+type metaKey struct {
+	clientId ClientId
+	filename string
+}
+
+func buildKey(clientId ClientId, filename string) metaKey {
+	// We update file if client sends file with same name,
+	// so client_id + filename pair is unique
+	return metaKey{
+		clientId: clientId,
+		filename: filename,
+	}
+}
+
 type Metadata struct {
-	//Map uuid -> filename -> FileParams
-	Map map[string]map[string]FileParams
+	container map[metaKey]*FileParams
+	mutex     sync.Mutex
 }
 
 type FileParams struct {
@@ -13,52 +33,38 @@ type FileParams struct {
 }
 
 func NewMetadata() Metadata {
-	metadataMap := make(map[string]map[string]FileParams)
-	return Metadata{metadataMap}
+	metadataMap := make(map[metaKey]*FileParams)
+	return Metadata{metadataMap, sync.Mutex{}}
 }
 
-func (m *Metadata) CompareModified(clientId, filename, modified string) bool {
-	return m.Map[clientId][filename].ModifiedAt == modified
+func (m *Metadata) IsMetaExists(clientId ClientId, filename, modified string) bool {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+	return m.container[buildKey(clientId, filename)].ModifiedAt == modified
 }
 
-func (m *Metadata) AddFile(clientId, filename, modified string, size, chunksCount int) {
-	if _, ok := m.Map[clientId]; !ok {
-		m.Map[clientId] = make(map[string]FileParams)
-	}
-	m.Map[clientId][filename] = FileParams{modified, chunksCount, 0, size}
+func (m *Metadata) AddFile(clientId ClientId, filename, modified string, size, chunksCount int) {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+	m.container[buildKey(clientId, filename)] = &FileParams{modified, chunksCount, 0, size}
 }
 
-func (m *Metadata) ClientExists(clientId string) bool {
-	if _, ok := m.Map[clientId]; ok {
-		return true
-	}
-	return false
+func (m *Metadata) GetParams(clientId ClientId, filename string) *FileParams {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+	return m.container[buildKey(clientId, filename)]
 }
 
-func (m *Metadata) FileExists(clientId, filename string) bool {
-	if m.ClientExists(clientId) {
-		if _, ok := m.Map[clientId][filename]; ok {
-			return true
-		}
-	}
-	return false
-}
-
-func (m *Metadata) GetCurrentChunk(clientId, filename string) int {
-	return m.Map[clientId][filename].CurrentChunk
-}
-
-func (m *Metadata) GetChunksCount(clientId, filename string) int {
-	return m.Map[clientId][filename].ChunksCount
-}
-
-func (m *Metadata) GetModifiedAt(clientId, filename string) string {
-	return m.Map[clientId][filename].ModifiedAt
-}
-
-func (m *Metadata) IncreaseCurrentChunk(clientId, filename string, currentChunk int) {
-	if params, ok := m.Map[clientId][filename]; ok {
+func (m *Metadata) SetCurrentChunk(clientId ClientId, filename string, currentChunk int) {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+	if params, ok := m.container[buildKey(clientId, filename)]; ok {
 		params.CurrentChunk = currentChunk
-		m.Map[clientId][filename] = params
 	}
+}
+
+func (m *Metadata) RemoveMeta(clientId ClientId, filename string) {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+	delete(m.container, buildKey(clientId, filename))
 }

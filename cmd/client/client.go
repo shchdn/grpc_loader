@@ -28,6 +28,8 @@ func RunClient() {
 	for {
 		fmt.Println("Pass me a filepath:")
 		fmt.Scanln(&filepath)
+		// Retry upload on error.
+		// If any of chunks were successfully sent before error, server will return chunk to start from.
 		for {
 			err := uploadFileToServer(client, myId, filepath)
 			if err == nil {
@@ -41,9 +43,19 @@ func generateClientId() api.ClientId {
 	return uuid.New().String()
 }
 
-func getChunkStartFrom(client api.UploaderClient, filename, modifiedAt, myId string, size int) (int, error) {
+func getChunkStartFrom(
+	client api.UploaderClient,
+	filename, modifiedAt, myId string,
+	size int,
+) (int, error) {
 	chunksCount := setChunksCount(size)
-	req := &api.UploadInitRequest{Filename: filename, ModifiedAt: modifiedAt, Size: int32(size), ChunksCount: int32(chunksCount), ClientId: myId}
+	req := &api.UploadInitRequest{
+		Filename:    filename,
+		ModifiedAt:  modifiedAt,
+		Size:        int32(size),
+		ChunksCount: int32(chunksCount),
+		ClientId:    myId,
+	}
 	res, err := client.InitUpload(context.Background(), req)
 	if err != nil {
 		return 0, err
@@ -60,7 +72,10 @@ func setChunksCount(size int) int {
 }
 
 func createClient() (api.UploaderClient, error) {
-	conn, err := grpc.Dial(api.ServerPort, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.Dial(
+		api.ServerPort,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -75,7 +90,7 @@ func uploadFileToServer(client api.UploaderClient, myId string, filepath string)
 		log.Fatal(err)
 	}
 	reader := bufio.NewReader(file)
-	if chunkStartFrom == chunksCount-1 {
+	if chunkStartFrom >= chunksCount {
 		log.Info("File is already on server")
 		return nil
 	}
@@ -85,14 +100,20 @@ func uploadFileToServer(client api.UploaderClient, myId string, filepath string)
 	if err != nil {
 		log.Fatal(err)
 	}
-	err = uploadChunks(stream, ctx, reader, fileInfo.Name(), chunkStartFrom, myId)
+	err = uploadChunks(stream, reader, fileInfo.Name(), chunkStartFrom, myId)
 	if err != nil {
 		return err
 	}
 	return nil
 }
 
-func uploadChunks(stream api.Uploader_UploadClient, ctx context.Context, reader *bufio.Reader, filename string, chunkStartFrom int, myId string) error {
+func uploadChunks(
+	stream api.Uploader_UploadClient,
+	reader *bufio.Reader,
+	filename string,
+	chunkStartFrom int,
+	myId string,
+) error {
 	var err error
 	buf := make([]byte, api.OneChunkSize)
 	for {
@@ -115,6 +136,7 @@ func uploadChunks(stream api.Uploader_UploadClient, ctx context.Context, reader 
 		chunkStartFrom++
 	}
 	var res = &api.UploadResponse{}
+	log.Info("Waiting for response")
 	err = stream.RecvMsg(res)
 	if err != nil {
 		log.Error(err)
@@ -127,7 +149,10 @@ func uploadChunks(stream api.Uploader_UploadClient, ctx context.Context, reader 
 	return fmt.Errorf("server responsed bad")
 }
 
-func openFile(filepath, myId string, client api.UploaderClient) (file *os.File, chunksCount int, chunkStartFrom int) {
+func openFile(
+	filepath, myId string,
+	client api.UploaderClient,
+) (file *os.File, chunksCount int, chunkStartFrom int) {
 	pathSlice := strings.Split(filepath, "/")
 	filename := pathSlice[len(pathSlice)-1]
 	log.Infof("%s got", filename)

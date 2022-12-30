@@ -21,7 +21,7 @@ type FileMeta struct {
 	Filepath     string
 	Filename     string
 	UploadedPath string
-	ClientId     string
+	ClientId     api.ClientId
 	ChunksCount  int
 }
 
@@ -38,9 +38,8 @@ func NewFileMeta(req *api.UploadRequest, serverMeta *api.Metadata) (FileMeta, er
 		log.Error(err)
 		return FileMeta{}, status.Errorf(codes.Internal, "Server error")
 	}
-	clientId := req.ClientId
-	chunksCount := serverMeta.GetChunksCount(clientId, req.Filename)
-	return FileMeta{file, filepath, filename, uploadedPath, clientId, chunksCount}, nil
+	chunksCount := serverMeta.GetParams(req.ClientId, req.Filename).ChunksCount
+	return FileMeta{file, filepath, filename, uploadedPath, req.ClientId, chunksCount}, nil
 }
 
 func NewUploadServer() *UploadServer {
@@ -60,7 +59,7 @@ func (s *UploadServer) InitUpload(ctx context.Context, req *api.UploadInitReques
 			return nil, err
 		}
 		// Compare meta from storage
-		modifiedEqual := s.meta.CompareModified(req.ClientId, req.Filename, req.ModifiedAt)
+		modifiedEqual := s.meta.IsMetaExists(req.ClientId, req.Filename, req.ModifiedAt)
 		// Delete if not equal
 		if !modifiedEqual {
 			log.Infof("[%s] Files are not equal. Deleting file from server...", req.ClientId)
@@ -69,9 +68,10 @@ func (s *UploadServer) InitUpload(ctx context.Context, req *api.UploadInitReques
 				return nil, err
 			}
 		} else {
-			currentChunk := s.meta.GetCurrentChunk(req.ClientId, req.Filename)
+			currentChunk := s.meta.GetParams(req.ClientId, req.Filename).CurrentChunk
 			log.Infof("[%s] Files are equal. Current chunk is - %d", req.ClientId, currentChunk)
-			return &api.UploadInitResponse{ChunkStartFrom: int32(currentChunk)}, nil
+			// Return next chunk
+			return &api.UploadInitResponse{ChunkStartFrom: int32(currentChunk + 1)}, nil
 		}
 	}
 	log.Infof("[%s] File %s doesnt exists on server. Creating ...", req.ClientId, req.Filename)
@@ -85,25 +85,29 @@ func (s *UploadServer) InitUpload(ctx context.Context, req *api.UploadInitReques
 }
 
 func (s *UploadServer) Upload(stream api.Uploader_UploadServer) error {
-	req, err := stream.Recv()
-	if err != nil {
-		return err
-	}
-	fileMeta, err := NewFileMeta(req, &s.meta)
-	if err != nil {
-		return err
-	}
+	fileMetaInited := false
+	var fileMeta FileMeta
 	for {
-		req, err = stream.Recv()
+		req, err := stream.Recv()
 		if err != nil {
+			log.Error("Failed to receive: ", err)
 			return err
 		}
-		onNewChunk(req, stream, fileMeta, &s.meta)
+		if !fileMetaInited {
+			fileMeta, err = NewFileMeta(req, &s.meta)
+			if err != nil {
+				return err
+			}
+		}
+		err = s.onNewChunk(req, fileMeta, &s.meta)
+		if err != nil {
+			log.Errorf("[%s] Failed to handle chunk: %s", req.ClientId, err)
+		}
 		if int(req.ChunkId) == fileMeta.ChunksCount-1 {
 			break
 		}
 	}
-	err = stream.SendMsg(&api.UploadResponse{Status: 1})
+	err := stream.SendMsg(&api.UploadResponse{Status: 1})
 	if err != nil {
 		log.Error(err)
 		return err
@@ -112,14 +116,23 @@ func (s *UploadServer) Upload(stream api.Uploader_UploadServer) error {
 	return nil
 }
 
-func onNewChunk(req *api.UploadRequest, stream api.Uploader_UploadServer, fileMeta FileMeta, serverMeta *api.Metadata) error {
+func (s *UploadServer) onNewChunk(req *api.UploadRequest, fileMeta FileMeta, serverMeta *api.Metadata) error {
 	log.Infof("[%s] Received %d chunk.", req.ClientId, req.ChunkId+1)
 	err := writeChunkToFile(fileMeta.File, req.Chunk)
 	if err != nil {
-		log.Error(err)
+		log.Error("Write to file failed: ", err)
+		// Write to file failed with error.
+		// File could be corrupted, we cant just retry writing chunk.
+		// So we have to remove file and meta and then wait client to retry request.
+		err = deleteUserFile(fileMeta.Filepath)
+		s.meta.RemoveMeta(req.ClientId, req.Filename)
+		if err != nil {
+			// At this point we can't handle this error proper way.
+			log.Errorf("Failed to remove corrupted file: %s", err)
+		}
 		return status.Errorf(codes.Internal, "Server error")
 	}
-	serverMeta.IncreaseCurrentChunk(req.ClientId, req.Filename, int(req.ChunkId))
+	serverMeta.SetCurrentChunk(req.ClientId, req.Filename, int(req.ChunkId))
 	return nil
 }
 
@@ -136,10 +149,8 @@ func createNewFile(filename, uuid string) (*os.File, error) {
 }
 
 func writeChunkToFile(file *os.File, chunk []byte) error {
-	if _, err := file.Write(chunk); err != nil {
-		return err
-	}
-	return nil
+	_, err := file.Write(chunk)
+	return err
 }
 
 func checkUserFileExists(req *api.UploadInitRequest) (bool, error) {
@@ -168,7 +179,7 @@ func checkUserFileExists(req *api.UploadInitRequest) (bool, error) {
 	return false, nil
 }
 
-func getTargetFilepath(clientId, filename string) (string, error) {
+func getTargetFilepath(clientId api.ClientId, filename string) (string, error) {
 	targetDirectory, err := getTargetDirectory()
 	if err != nil {
 		return "", nil
@@ -192,7 +203,7 @@ func getTargetDirectory() (string, error) {
 	return uploadedPath, nil
 }
 
-func createClientDirectory(clientId string) error {
+func createClientDirectory(clientId api.ClientId) error {
 	uploadedPath, err := getTargetDirectory()
 	if err != nil {
 		return err
